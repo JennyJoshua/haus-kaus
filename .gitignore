@@ -1,0 +1,26 @@
+# Build output and caches
+build/
+.gradle/
+.cxx/
+*.apk
+*.aab
+*.class
+
+# Local and secret files — never commit these
+local.properties
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.p12
+keystore.properties
+google-services.json.bak
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# The Gradle wrapper JAR MUST be committed
+!gradle/wrapper/gradle-wrapper.jar

@@ -1,0 +1,156 @@
+name: Android build and test
+
+# Routine build: compile, unit tests, debug APK. No secrets, read-only token.
+# Fork pull requests are safe: the plain `pull_request` trigger gives forks a read-only token and no secrets.
+# Do NOT change this to `pull_request_target` (see docs/SECURITY.md).
+on:
+  workflow_dispatch:
+    inputs:
+      module:
+        description: Android application module (blank = repository variable ANDROID_MODULE, else "app")
+        required: false
+        default: ""
+        type: string
+      compile_task:
+        description: Gradle compile task (blank = compileDebugSources)
+        required: false
+        default: ""
+        type: string
+      test_task:
+        description: Gradle unit-test task (blank = testDebugUnitTest)
+        required: false
+        default: ""
+        type: string
+      apk_task:
+        description: Gradle APK task (blank = assembleDebug)
+        required: false
+        default: ""
+        type: string
+      java_version:
+        description: Java version (blank = repository variable ANDROID_JAVA_VERSION, else 17)
+        required: false
+        default: ""
+        type: string
+      run_tests:
+        description: Run unit tests
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**", "examples/**", "LICENSE", ".github/ISSUE_TEMPLATE/**", "_inbox/**", "_failed/**"]
+  pull_request:
+    paths-ignore: ["**.md", "docs/**", "examples/**", "LICENSE", ".github/ISSUE_TEMPLATE/**", "_inbox/**", "_failed/**"]
+
+# A newer run for the same branch/PR cancels the older one (saves free minutes).
+concurrency:
+  group: android-build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build, test, package debug APK
+    # The template repository itself has no Android project, so skip it there.
+    if: github.event.repository.is_template != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      PROJECT_DIR: ${{ vars.ANDROID_PROJECT_DIR || '.' }}
+      MODULE: ${{ inputs.module || vars.ANDROID_MODULE || 'app' }}
+      JAVA_VERSION: ${{ inputs.java_version || vars.ANDROID_JAVA_VERSION || '17' }}
+      COMPILE_TASK: ${{ inputs.compile_task || vars.ANDROID_COMPILE_TASK || 'compileDebugSources' }}
+      TEST_TASK: ${{ inputs.test_task || vars.ANDROID_TEST_TASK || 'testDebugUnitTest' }}
+      APK_TASK: ${{ inputs.apk_task || vars.ANDROID_APK_TASK || 'assembleDebug' }}
+      RUN_TESTS: ${{ inputs.run_tests || vars.ANDROID_RUN_TESTS || 'true' }}
+      LOG_DIR: ci-logs
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Validate Android project
+        id: validate
+        run: bash scripts/validate-android-project.sh
+
+      - name: Set up Java
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@748248ddd2a24f49513d8f472f81c3a07d4d50e1 # v4.4.4
+
+      - name: Compile
+        id: compile
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/$LOG_DIR"
+          cd "$PROJECT_DIR"
+          GRADLE_PATH=":${MODULE//\//:}"
+          ./gradlew "${GRADLE_PATH}:${COMPILE_TASK}" --stacktrace --console=plain --no-daemon \
+            2>&1 | tee "$GITHUB_WORKSPACE/$LOG_DIR/compile.log"
+
+      - name: Unit tests
+        id: tests
+        if: env.RUN_TESTS == 'true'
+        run: |
+          cd "$PROJECT_DIR"
+          GRADLE_PATH=":${MODULE//\//:}"
+          ./gradlew "${GRADLE_PATH}:${TEST_TASK}" --stacktrace --console=plain --no-daemon \
+            2>&1 | tee "$GITHUB_WORKSPACE/$LOG_DIR/unit-tests.log"
+
+      - name: Build debug APK
+        id: apk
+        run: |
+          cd "$PROJECT_DIR"
+          GRADLE_PATH=":${MODULE//\//:}"
+          ./gradlew "${GRADLE_PATH}:${APK_TASK}" --stacktrace --console=plain --no-daemon \
+            2>&1 | tee "$GITHUB_WORKSPACE/$LOG_DIR/apk.log"
+          APK_DIR="$MODULE/build/outputs/apk/debug"
+          if ! compgen -G "$APK_DIR/*.apk" > /dev/null; then
+            echo "::error title=No APK produced::Gradle finished but no .apk exists in $PROJECT_DIR/$APK_DIR. Check APK_TASK ('$APK_TASK') and the module's build variants."
+            exit 1
+          fi
+          ls -l "$APK_DIR"/*.apk
+
+      - name: Upload debug APK
+        if: steps.apk.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: android-debug-apk-run${{ github.run_number }}
+          path: ${{ env.PROJECT_DIR }}/${{ env.MODULE }}/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: ${{ vars.ARTIFACT_RETENTION_DAYS || 7 }}
+
+      - name: Summarise result and classify failures
+        if: always()
+        env:
+          OUTCOME_VALIDATE: ${{ steps.validate.outcome }}
+          OUTCOME_COMPILE: ${{ steps.compile.outcome }}
+          OUTCOME_TEST: ${{ steps.tests.outcome }}
+          OUTCOME_APK: ${{ steps.apk.outcome }}
+        run: bash scripts/collect-build-diagnostics.sh
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: android-diagnostics-run${{ github.run_number }}
+          path: |
+            ci-logs/**
+            ${{ env.PROJECT_DIR }}/**/build/reports/**
+            ${{ env.PROJECT_DIR }}/**/build/test-results/**
+          if-no-files-found: ignore
+          retention-days: ${{ vars.ARTIFACT_RETENTION_DAYS || 7 }}

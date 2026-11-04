@@ -1,0 +1,74 @@
+name: Process ZIP inbox
+
+# Upload a ZIP to _inbox/ on main; this workflow checks it, extracts it into the repository,
+# deletes it, and commits the result. Rejected ZIPs are moved to _failed/ with a report.
+# Rules and limits live in scripts/process-zip-inbox.py. See docs/ZIP_INBOX_OPERATIONS.md.
+on:
+  push:
+    branches: [main]
+    paths: ["_inbox/**"]
+  workflow_dispatch:
+
+# One run at a time so two uploads never write at the same moment.
+concurrency:
+  group: process-zip-inbox
+  cancel-in-progress: false
+
+# Write access is needed only to commit the extracted files back to main.
+permissions:
+  contents: write
+
+jobs:
+  process:
+    name: Extract ZIPs from _inbox
+    # Never react to the bot's own commits; only ever run for main.
+    if: github.actor != 'github-actions[bot]' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          # Credentials are kept on purpose: the commit step below pushes with the built-in token.
+          persist-credentials: true
+
+      - name: Extract ZIPs
+        id: process
+        continue-on-error: true
+        run: python3 scripts/process-zip-inbox.py
+
+      - name: Commit results
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+          # Defense in depth: never commit workflow or git-internal changes from an extraction.
+          if git diff --cached --name-only | grep -qE '^(\.github/|\.git/)'; then
+            echo "::error title=Blocked::Staged changes touch .github/ or .git/; refusing to commit."
+            exit 1
+          fi
+          git commit -m "Process ZIP inbox"
+          for attempt in 1 2 3; do
+            if git pull --rebase origin main && git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "Push attempt $attempt failed; retrying."
+            sleep 5
+          done
+          echo "::error title=Push failed::Could not push the extraction commit. If main is protected, allow GitHub Actions to push."
+          exit 1
+
+      - name: Report rejected ZIPs
+        if: steps.process.outcome == 'failure'
+        run: |
+          echo "::error title=ZIP rejected::At least one ZIP was rejected. See the run summary and _failed/ for the report."
+          exit 1
