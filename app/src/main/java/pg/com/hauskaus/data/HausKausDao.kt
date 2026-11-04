@@ -19,8 +19,8 @@ interface HausKausDao {
     @Query("UPDATE repayment_allocations SET reversed=1 WHERE repaymentEventId=:repaymentId") suspend fun reverseAllocations(repaymentId: String)
     @Query("SELECT * FROM ledger_events WHERE id=:id LIMIT 1") suspend fun event(id: String): LedgerEvent?
     @Query("SELECT COUNT(*) FROM ledger_events WHERE reversesEventId=:id") suspend fun reversalCount(id: String): Int
-    @Query("SELECT COALESCE(SUM(amountToea),0) FROM ledger_events WHERE type='CASH_SALE' AND reversesEventId IS NULL") suspend fun cashSales(): Long
-    @Query("SELECT COALESCE(SUM(amountToea),0) FROM ledger_events WHERE type='EXPENSE' AND reversesEventId IS NULL") suspend fun expenses(): Long
-    @Query("SELECT COALESCE(SUM(amountToea),0) FROM ledger_events WHERE type='CREDIT_SALE' AND reversesEventId IS NULL") suspend fun creditSales(): Long
-    @Query("SELECT COALESCE(SUM(amountToea),0) FROM ledger_events WHERE type='REPAYMENT' AND reversesEventId IS NULL") suspend fun repayments(): Long
+    @Query("SELECT COALESCE(SUM(e.amountToea),0) FROM ledger_events e WHERE e.type='CASH_SALE' AND e.reversesEventId IS NULL AND NOT EXISTS (SELECT 1 FROM ledger_events r WHERE r.reversesEventId=e.id)") suspend fun cashSales(): Long
+    @Query("SELECT COALESCE(SUM(e.amountToea),0) FROM ledger_events e WHERE e.type='EXPENSE' AND e.reversesEventId IS NULL AND NOT EXISTS (SELECT 1 FROM ledger_events r WHERE r.reversesEventId=e.id)") suspend fun expenses(): Long
+    @Query("SELECT COALESCE(SUM(e.amountToea),0) FROM ledger_events e WHERE e.type='CREDIT_SALE' AND e.reversesEventId IS NULL AND NOT EXISTS (SELECT 1 FROM ledger_events r WHERE r.reversesEventId=e.id)") suspend fun creditSales(): Long
+    @Query("SELECT COALESCE(SUM(e.amountToea),0) FROM ledger_events e WHERE e.type='REPAYMENT' AND e.reversesEventId IS NULL AND NOT EXISTS (SELECT 1 FROM ledger_events r WHERE r.reversesEventId=e.id)") suspend fun repayments(): Long
 }
